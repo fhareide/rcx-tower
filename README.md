@@ -94,3 +94,18 @@ plus vendor control requests for range and speed. `rcxtower/tower.py` drives tho
 `winusb.dll` with ctypes. `rcxtower/rcx.py` implements the RCX packet framing and opcodes.
 `rcxtower/bridge.py` pumps bytes between the tower and one end of a com0com pair, echoing sent
 bytes the way the serial tower does.
+
+## Licence
+
+RCX Tower's own code is released under the [MIT licence](LICENSE).
+
+Two things in this project are not covered by it:
+
+- `rcxtower/data/firm0328.lgo` is the LEGO RCX firmware 3.2.8, copyright The LEGO Group. It comes
+  from the LEGO Mindstorms SDK 2.5 and is included for convenience only.
+- `RCX Tower.exe` builds include `nqc.exe` when BricxCC is installed on the build machine. NQC
+  (Not Quite C, by Dave Baum and John Hansen) is under the Mozilla Public License 1.0; its source
+  is at <https://bricxcc.sourceforge.net/nqc/>.
+
+LEGO and Mindstorms are trademarks of the LEGO Group, which does not sponsor or endorse this
+project.
