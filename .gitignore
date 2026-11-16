@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+
+# PyInstaller output (build_exe.bat recreates these)
+build/
+dist/
+*.spec
+
+# local logs from testing
+bridge.log
+bridge.err
+build.log
