@@ -8,18 +8,29 @@ import webbrowser
 import tkinter as tk
 from tkinter import filedialog, ttk
 
+import sys
+
 from . import __version__
-from . import bridge as br
-from . import driver as drv
+from . import diag
+from . import editor as ed
 from . import firmware as fw
 from . import nqc
 from . import tower as tw
-from . import towerapi as ta
-from . import tray as tr
 from .rcx import RCX
 
-import sys
-import winreg
+# RCXTOWER_PORTABLE_UI=1 shows the window as it looks on macOS/Linux, for testing on Windows
+WINDOWS = sys.platform == "win32" and not os.environ.get("RCXTOWER_PORTABLE_UI")
+MAC = sys.platform == "darwin"
+if WINDOWS:
+    # the bridge, the driver installer, the BricxCC helper and the tray icon are Windows-only
+    import winreg
+    from . import bridge as br
+    from . import driver as drv
+    from . import towerapi as ta
+    from . import tray as tr
+
+UI_FONT = "Segoe UI" if WINDOWS else ("Helvetica Neue" if MAC else "DejaVu Sans")
+MONO_FONT = "Consolas" if WINDOWS else ("Menlo" if MAC else "DejaVu Sans Mono")
 
 USB_MODE = "USB (nothing to install)"
 SENSOR_CHOICES = ["as the program set it", "touch", "light", "temperature", "rotation", "raw"]
@@ -30,6 +41,8 @@ FROZEN = bool(getattr(sys, "frozen", False))
 
 
 def autostart_enabled():
+    if not WINDOWS:
+        return False
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as k:
             winreg.QueryValueEx(k, RUN_NAME)
@@ -52,7 +65,20 @@ def set_autostart(on):
 ZADIG_URL = "https://zadig.akeo.ie"
 COM0COM_URL = "https://sourceforge.net/projects/com0com/"
 BRICXCC_URL = "https://sourceforge.net/projects/bricxcc/"
-SETTINGS = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "rcxtower", "settings.json")
+PYUSB_URL = "https://github.com/pyusb/pyusb#installing"
+NQC_URL = "https://bricxcc.sourceforge.net/nqc/"
+
+
+def _settings_dir():
+    home = os.path.expanduser("~")
+    if WINDOWS:
+        return os.path.join(os.environ.get("APPDATA", home), "rcxtower")
+    if MAC:
+        return os.path.join(home, "Library", "Application Support", "rcxtower")
+    return os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.join(home, ".config")), "rcxtower")
+
+
+SETTINGS = os.path.join(_settings_dir(), "settings.json")
 
 
 def load_settings():
@@ -78,15 +104,21 @@ class App:
         self.tray = None
         self._told_about_tray = False
         self.settings = load_settings()
+        diag.init(os.path.dirname(SETTINGS))
         self.jobs = queue.Queue()
         self.events = queue.Queue()
         self.bridge = None
         self.bridge_tower = None
         self.busy = False
+        self._job = None
+        self._job_warned = False
+        root.report_callback_exception = self._tk_error
         self._last_counts = (0, 0)
 
         root.title("RCX Tower %s" % __version__)
-        root.minsize(620, 560)
+        root.minsize(720, 640)
+        root.geometry("860x760")
+        self.mono_font = MONO_FONT
         root.protocol("WM_DELETE_WINDOW", self.on_close)
         if os.path.isfile(ICON):
             try:
@@ -94,16 +126,17 @@ class App:
             except tk.TclError:
                 pass
         self._build()
-        self.tray = tr.Tray(ICON if os.path.isfile(ICON) else None, "RCX Tower", self._tray_menu,
-                            lambda action: self.events.put(("tray", action)))
-        if not self.tray.start():
-            self.tray = None
+        if WINDOWS:
+            self.tray = tr.Tray(ICON if os.path.isfile(ICON) else None, "RCX Tower", self._tray_menu,
+                                lambda action: self.events.put(("tray", action)))
+            if not self.tray.start():
+                self.tray = None
         if start_hidden and self.tray:
             root.withdraw()
         threading.Thread(target=self._worker, name="rcx-worker", daemon=True).start()
         self.root.after(100, self._pump)
         self.root.after(200, self._tick)
-        if self.settings.get("bridge_autostart"):
+        if WINDOWS and self.settings.get("bridge_autostart"):
             self.root.after(600, self.start_bridge)
         else:
             self.root.after(600, self.refresh)
@@ -115,18 +148,22 @@ class App:
         top.pack(fill="x", **pad)
         self.tower_var = tk.StringVar(value="Tower: checking...")
         self.rcx_var = tk.StringVar(value="RCX: not checked yet")
-        ttk.Label(top, textvariable=self.tower_var, font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w")
-        ttk.Label(top, textvariable=self.rcx_var, font=("Segoe UI", 10, "bold")).grid(row=1, column=0, sticky="w")
+        ttk.Label(top, textvariable=self.tower_var, font=(UI_FONT, 10, "bold")).grid(row=0, column=0, sticky="w")
+        ttk.Label(top, textvariable=self.rcx_var, font=(UI_FONT, 10, "bold")).grid(row=1, column=0, sticky="w")
         self.refresh_btn = ttk.Button(top, text="Check RCX", command=self.refresh)
         self.refresh_btn.grid(row=0, column=1, rowspan=2, sticky="e")
         top.columnconfigure(0, weight=1)
 
         nb = ttk.Notebook(self.root)
-        nb.pack(fill="x", **pad)
+        nb.pack(fill="both", expand=True, **pad)
         self.nb = nb
-        nb.add(self._tab_brick(nb), text="  Brick  ")
+        brick = self._tab_brick(nb)          # creates the slot setting the editor shares
+        self.editor = ed.Editor(nb, self)
+        nb.add(self.editor, text="  Editor  ")
+        nb.add(brick, text="  Brick  ")
         nb.add(self._tab_remote(nb), text="  Remote  ")
-        nb.add(self._tab_bridge(nb), text="  Bridge (BricxCC / NQC)  ")
+        if WINDOWS:
+            nb.add(self._tab_bridge(nb), text="  Bridge (BricxCC / NQC)  ")
         nb.add(self._tab_setup(nb), text="  Setup  ")
 
         self.progress = ttk.Progressbar(self.root, maximum=100)
@@ -135,8 +172,8 @@ class App:
         ttk.Label(self.root, textvariable=self.busy_var).pack(anchor="w", padx=8)
 
         logf = ttk.Frame(self.root)
-        logf.pack(fill="both", expand=True, **pad)
-        self.log_box = tk.Text(logf, height=9, state="disabled", wrap="word", font=("Consolas", 9))
+        logf.pack(fill="x", **pad)
+        self.log_box = tk.Text(logf, height=5, state="disabled", wrap="word", font=(MONO_FONT, 9))
         sb = ttk.Scrollbar(logf, command=self.log_box.yview)
         self.log_box.configure(yscrollcommand=sb.set)
         sb.pack(side="right", fill="y")
@@ -151,10 +188,12 @@ class App:
         ttk.Button(fwf, text="Browse...", command=lambda: self._browse(
             self.fw_path, [("RCX firmware", "*.lgo *.srec"), ("All files", "*.*")])).grid(row=0, column=1, padx=4)
         ttk.Button(fwf, text="Download firmware", command=self.do_firmware).grid(row=0, column=2)
+        self.fw_fast = tk.BooleanVar(value=bool(self.settings.get("firmware_fast", True)))
+        ttk.Checkbutton(fwf, text="Fast", variable=self.fw_fast).grid(row=0, column=3, padx=(6, 0))
         ttk.Label(fwf, text=("Leave the box empty to use the built-in LEGO firmware 3.2.8. " if fw.bundled_path() else "")
-                  + "Needed once after the batteries have been out. Takes about four minutes; "
-                    "keep the RCX close to the tower.", wraplength=540, foreground="#555").grid(
-            row=1, column=0, columnspan=3, sticky="w", pady=(4, 0))
+                  + "Needed once after the batteries have been out. Takes about a minute and a half with Fast ticked, "
+                    "about four minutes without; keep the RCX close to the tower.", wraplength=540, foreground="#555").grid(
+            row=1, column=0, columnspan=4, sticky="w", pady=(4, 0))
         fwf.columnconfigure(0, weight=1)
 
         pf = ttk.LabelFrame(f, text="Program", padding=8)
@@ -211,7 +250,7 @@ class App:
             ttk.Combobox(vf, textvariable=kind, values=SENSOR_CHOICES, state="readonly", width=20).grid(
                 row=i, column=1, padx=6, pady=1)
             val = tk.StringVar(value="-")
-            ttk.Label(vf, textvariable=val, font=("Consolas", 10), width=16).grid(row=i, column=2, sticky="w")
+            ttk.Label(vf, textvariable=val, font=(MONO_FONT, 10), width=16).grid(row=i, column=2, sticky="w")
             self.sensor_kinds.append(kind)
             self.sensor_vals.append(val)
         ttk.Button(vf, text="Read sensors", command=self.read_sensors).grid(row=0, column=3, padx=(10, 0))
@@ -239,7 +278,7 @@ class App:
         self.autostart = tk.BooleanVar(value=self.settings.get("bridge_autostart", False))
         ttk.Checkbutton(row, text="Start with the app", variable=self.autostart, command=self._save).pack(side="left", padx=10)
         self.bridge_var = tk.StringVar(value="Bridge is off.")
-        ttk.Label(f, textvariable=self.bridge_var, font=("Segoe UI", 10, "bold"), wraplength=560).pack(anchor="w", pady=(10, 0))
+        ttk.Label(f, textvariable=self.bridge_var, font=(UI_FONT, 10, "bold"), wraplength=560).pack(anchor="w", pady=(10, 0))
         self.bridge_hint = tk.StringVar(value="")
         ttk.Label(f, textvariable=self.bridge_hint, wraplength=560, foreground="#555").pack(anchor="w", pady=(4, 0))
 
@@ -336,18 +375,24 @@ class App:
         f = ttk.Frame(parent, padding=10)
         self.setup_rows = {}
         self.setup_buttons = {}
-        items = (
-            ("tower", "1. USB tower driver (WinUSB)", "Install tower driver", self.install_driver),
-            ("nqc", "2. NQC compiler (to download .nqc programs)", "Get BricxCC", BRICXCC_URL),
-            ("com0com", "Optional: virtual COM port (only for COM port mode)", "Get com0com", COM0COM_URL),
-        )
+        if WINDOWS:
+            items = (
+                ("tower", "1. USB tower driver (WinUSB)", "Install tower driver", self.install_driver),
+                ("nqc", "2. NQC compiler (to download .nqc programs)", "Get BricxCC", BRICXCC_URL),
+                ("com0com", "Optional: virtual COM port (only for COM port mode)", "Get com0com", COM0COM_URL),
+            )
+        else:
+            items = (
+                ("tower", "1. USB access (pyusb and libusb)", "How to install", PYUSB_URL),
+                ("nqc", "2. NQC compiler (to download .nqc programs)", "Get NQC", NQC_URL),
+            )
         for key, title, btn, url in items:
             box = ttk.Frame(f)
             box.pack(fill="x", pady=4)
             mark = tk.StringVar(value="...")
             detail = tk.StringVar(value="")
-            ttk.Label(box, textvariable=mark, width=10, font=("Segoe UI", 9, "bold")).grid(row=0, column=0, sticky="nw")
-            ttk.Label(box, text=title, font=("Segoe UI", 10, "bold")).grid(row=0, column=1, sticky="w")
+            ttk.Label(box, textvariable=mark, width=10, font=(UI_FONT, 9, "bold")).grid(row=0, column=0, sticky="nw")
+            ttk.Label(box, text=title, font=(UI_FONT, 10, "bold")).grid(row=0, column=1, sticky="w")
             action = url if callable(url) else (lambda u=url: webbrowser.open(u))
             button = ttk.Button(box, text=btn, command=action)
             button.grid(row=0, column=2, sticky="e")
@@ -355,6 +400,16 @@ class App:
             box.columnconfigure(1, weight=1)
             self.setup_rows[key] = (mark, detail)
             self.setup_buttons[key] = button
+        ttk.Separator(f).pack(fill="x", pady=(12, 8))
+        box = ttk.Frame(f)
+        box.pack(fill="x")
+        ttk.Label(box, text="Something not working?", font=(UI_FONT, 10, "bold")).grid(row=0, column=0, sticky="w")
+        ttk.Label(box, wraplength=440, foreground="#444",
+                  text="Copy diagnostics tests the tower and the RCX and copies the result, with the recent log, "
+                       "so you can paste it into a message.").grid(row=1, column=0, sticky="w")
+        ttk.Button(box, text="Copy diagnostics", command=self.copy_diagnostics).grid(row=0, column=1, sticky="e")
+        ttk.Button(box, text="Open log folder", command=self.open_log_folder).grid(row=1, column=1, sticky="ne")
+        box.columnconfigure(0, weight=1)
         return f
 
     def install_driver(self):
@@ -397,13 +452,59 @@ class App:
             slot = int(self.slot.get())
         except (tk.TclError, ValueError):
             slot = 1
+        self.settings.update(firmware_fast=bool(self.fw_fast.get()))
         self.settings.update(firmware_path=self.fw_path.get(), program_path=self.prog_path.get(), slot=slot,
-                             run_after=bool(self.run_after.get()), bridge_autostart=bool(self.autostart.get()),
-                             keep_in_tray=bool(self.keep_in_tray.get()), pair=self.pair_var.get())
+                             run_after=bool(self.run_after.get()))
+        if WINDOWS:
+            self.settings.update(bridge_autostart=bool(self.autostart.get()),
+                                 keep_in_tray=bool(self.keep_in_tray.get()), pair=self.pair_var.get())
         save_settings(self.settings)
 
+    def _tk_error(self, kind, value, tb):
+        import traceback
+        diag.write("Error in the window:\n%s" % "".join(traceback.format_exception(kind, value, tb)))
+        self._append_log("Something went wrong in the window: %s (details are in the log file)" % value)
+
     def log(self, text):
+        diag.write(text)
         self.events.put(("log", text))
+
+    def copy_diagnostics(self):
+        """Put a report for a bug report on the clipboard (and in diagnostics.txt next to the log)."""
+        bridge = None
+        if self.bridge is not None:
+            bridge = "running, %s" % type(self.bridge).__name__
+        extra = ["Status shown: %s | %s" % (self.tower_var.get(), self.rcx_var.get())]
+
+        running = self._job
+        if running:
+            # The worker is busy, perhaps for ever: report from here, without touching the tower.
+            extra.append("A job is running: '%s' for %d s; no tower activity for %d s" % (
+                running[0], time.monotonic() - running[1], diag.quiet_seconds()))
+            extra.append("Where each thread is:")
+            extra += ["  " + line for line in diag.thread_stacks().splitlines()]
+
+        def job():
+            text = diag.report(bridge=bridge, extra=extra, live=not running)
+            diag.write("Diagnostics report made.")
+            try:
+                with open(os.path.join(os.path.dirname(SETTINGS), "diagnostics.txt"), "w", encoding="utf-8") as f:
+                    f.write(text)
+            except OSError:
+                pass
+            self.events.put(("clipboard", text))
+        if running:
+            threading.Thread(target=job, name="diagnostics", daemon=True).start()
+        else:
+            self.submit("Collecting diagnostics", job, raw=True)
+
+    def open_log_folder(self):
+        folder = os.path.dirname(SETTINGS)
+        os.makedirs(folder, exist_ok=True)
+        if WINDOWS:
+            os.startfile(folder)
+        else:
+            webbrowser.open("file://" + folder)
 
     def _append_log(self, text):
         self.log_box.configure(state="normal")
@@ -421,6 +522,10 @@ class App:
             label, fn, raw = self.jobs.get()
             self.events.put(("busy", label))
             resume = False
+            began = time.monotonic()
+            self._job = (label, began)
+            self._job_warned = False
+            diag.write("Job started: %s" % label)
             try:
                 if raw:
                     fn()
@@ -430,21 +535,26 @@ class App:
                         t.set_parm(tw.PARM_RANGE, tw.RANGE_LONG)
                         fn(RCX(t))
             except Exception as e:
+                diag.write_exception(label)
                 self.log("%s failed: %s" % (label, e))
             finally:
                 if resume:
                     try:
                         self._bridge_on(self._bridge_port)
                     except Exception as e:
+                        diag.write_exception("Restarting the bridge")
                         self.log("Could not restart the bridge: %s" % e)
+                diag.write("Job ended: %s (%.1f s)" % (label, time.monotonic() - began))
+                self._job = None
                 self.events.put(("idle", None))
 
     def _bridge_on(self, port):
         self.bridge_tower = tw.Tower()
         try:
             self.bridge_tower.set_parm(tw.PARM_RANGE, tw.RANGE_LONG)
+            self.bridge_tower.set_speed(tw.SPEED_2400)  # a cut-short fast download leaves it at 4800
             if port == br.USB_PORT:
-                self.bridge = br.UsbBridge(self.bridge_tower)
+                self.bridge = br.UsbBridge(self.bridge_tower, on_bytes=self._bridge_event)
             else:
                 self.bridge = br.Bridge(self.bridge_tower, port)
             self.bridge.start()
@@ -454,6 +564,13 @@ class App:
             self.bridge = None
             raise
         self._bridge_port = port
+
+    @staticmethod
+    def _bridge_event(kind, data):
+        """Runs on the bridge thread. The bytes themselves are already in the log as tower traffic."""
+        if kind in ("open", "close", "timeout"):
+            diag.write("    bridge: %s" % {"open": "a program connected", "close": "the program disconnected",
+                                           "timeout": "told the program that the RCX did not answer"}[kind])
 
     def _bridge_off(self):
         """Stop the bridge if it runs. Returns True if it was running."""
@@ -528,14 +645,16 @@ class App:
             return
         self.log("Using firmware file %s" % os.path.basename(path))
         self._save()
+        fast = bool(self.fw_fast.get())
 
         def job(rcx):
             image = fw.load_srec(path)
-            self.log("Firmware image is %d bytes. Sending..." % len(image))
-            if not rcx.ping(retries=3):
+            self.log("Firmware image is %d bytes. Sending%s..." % (len(image), " (fast)" if fast else ""))
+            if not fast and not rcx.ping(retries=3):
                 raise RuntimeError("the RCX does not answer")
             start = time.monotonic()
-            v = rcx.download_firmware(image, lambda d, t: self.events.put(("progress", 100.0 * d / t)))
+            v = rcx.download_firmware(image, lambda d, t: self.events.put(("progress", 100.0 * d / t)),
+                                      fast=fast, note=self.log)
             self.log("Firmware %s installed in %d seconds." % (v["firmware"], time.monotonic() - start))
             self.events.put(("rcx", "RCX: firmware %s" % v["firmware"]))
         self.submit("Downloading firmware", job)
@@ -601,6 +720,14 @@ class App:
                         self.root.after(400, lambda: self.sensor_auto.get() and self.read_sensors())
                 elif kind == "progress":
                     self.progress["value"] = data
+                elif kind == "clipboard":
+                    self.root.clipboard_clear()
+                    self.root.clipboard_append(data)
+                    self.root.update()
+                    self._append_log("Diagnostics copied (%d lines). Paste them into your message. "
+                                     "They are also saved as diagnostics.txt in the log folder." % len(data.splitlines()))
+                elif kind == "editor":
+                    self.editor.show_messages(*data)
                 elif kind == "tray":
                     self._tray_action(data)
                     if data == "exit":
@@ -609,19 +736,70 @@ class App:
             pass
         self.root.after(100, self._pump)
 
+    STUCK_SECONDS = 20
+
+    def _watch_job(self):
+        """A job that has done nothing with the tower for a while: say so, and record where it waits."""
+        job = self._job
+        if not job or self._job_warned:
+            return
+        label, began = job
+        if time.monotonic() - began > self.STUCK_SECONDS and diag.quiet_seconds() > self.STUCK_SECONDS:
+            self._job_warned = True
+            diag.write("STUCK: '%s' has been running for %d s with no tower activity for %d s.\n%s" % (
+                label, time.monotonic() - began, diag.quiet_seconds(), diag.thread_stacks()))
+            self._append_log("%s is taking unusually long. Unplug the tower and plug it back in. If it happens "
+                             "again, use Copy diagnostics on the Setup tab and send the result." % label)
+
     def _tick(self):
-        state = "ready" if self.bridge else tw.tower_state()
-        self.tower_var.set({"ready": "Tower: connected", "nodriver": "Tower: plugged in, but the driver is missing (see Setup)",
+        self._watch_job()
+        try:
+            state = "ready" if self.bridge else tw.tower_state()
+        except Exception as e:
+            if not getattr(self, "_tick_failed", False):
+                self._tick_failed = True
+                diag.write_exception("Looking for the tower")
+                self.log("Looking for the tower failed: %s" % e)
+            state = "absent"
+        if state != getattr(self, "_last_state", None):
+            diag.write("Tower state: %s -> %s" % (getattr(self, "_last_state", None), state))
+            self._last_state = state
+        self.tower_var.set({"ready": "Tower: connected", "nodriver": "Tower: plugged in, but the driver is missing for this USB port (see Setup)",
+                            "nolib": "Tower: the USB library is missing (see Setup)",
                             "absent": "Tower: not plugged in"}[state])
         mark, detail = self.setup_rows["tower"]
-        mark.set({"ready": "OK", "nodriver": "TO DO", "absent": "?"}[state])
-        detail.set({
-            "ready": "WinUSB is bound to the tower.",
-            "nodriver": "Click Install tower driver. It uses the WinUSB driver that is already part of Windows; "
-                        "nothing is downloaded. Windows asks for permission once.",
-            "absent": "Plug the tower in to check its driver."}[state])
-        self.setup_buttons["tower"].state(["!disabled"] if state == "nodriver" else ["disabled"])
+        mark.set({"ready": "OK", "nodriver": "TO DO", "nolib": "TO DO", "absent": "?"}[state])
+        if WINDOWS:
+            detail.set({
+                "ready": "WinUSB is bound to the tower.",
+                "nodriver": "Click Install tower driver. It uses the WinUSB driver that is already part of Windows; "
+                            "nothing is downloaded. Windows asks for permission once per USB port: after moving "
+                            "the tower to another port, install again.",
+                "nolib": "The libusb backend was chosen but pyusb or libusb is missing.",
+                "absent": "Plug the tower in to check its driver."}[state])
+            self.setup_buttons["tower"].state(["!disabled"] if state == "nodriver" else ["disabled"])
+        else:
+            detail.set({
+                "ready": "The tower is reachable. No driver is needed on this system.",
+                "nolib": "In a terminal run:  pip3 install pyusb libusb-package",
+                "absent": "The USB library is installed. Plug the tower in."}.get(state, ""))
 
+        path = nqc.find_nqc()
+        mark, detail = self.setup_rows["nqc"]
+        mark.set("OK" if path else "TO DO")
+        if WINDOWS:
+            detail.set("Found: %s" % path if path else
+                       "Install BricxCC (it includes nqc.exe), or put nqc.exe next to this program.")
+        else:
+            detail.set("Found: %s" % path if path else
+                       "Build NQC from its source and put the 'nqc' program on your PATH or next to this app. "
+                       "Ready-made .rcx files can be downloaded without it.")
+        if WINDOWS:
+            self._tick_windows()
+        self.root.after(1500, self._tick)
+
+    def _tick_windows(self):
+        """Keep the bridge, BricxCC and tray parts of the window up to date."""
         pairs = br.com0com_pairs()
         pair_names = ["COM port: %s <-> %s" % p for p in pairs]
         names = [USB_MODE] + pair_names
@@ -634,10 +812,6 @@ class App:
         detail.set("Found: %s." % ", ".join("%s <-> %s" % p for p in pairs) if pairs else
                    "Not needed for USB mode. For COM port mode install the signed com0com build, make one "
                    "pair in its Setup tool and name one end e.g. COM2 (tick 'use Ports class').")
-        path = nqc.find_nqc()
-        mark, detail = self.setup_rows["nqc"]
-        mark.set("OK" if path else "TO DO")
-        detail.set("Found: %s" % path if path else "Install BricxCC (it includes nqc.exe), or put nqc.exe next to this program.")
 
         if self.bridge:
             if self.bridge.error or not self.bridge.running:
@@ -675,7 +849,6 @@ class App:
                 self.tray.set_tooltip("RCX Tower - bridge on %s" % self._app_port())
             else:
                 self.tray.set_tooltip("RCX Tower - bridge off")
-        self.root.after(1500, self._tick)
 
     def _app_port(self):
         """The port name the user gives to BricxCC / NQC for the running bridge."""
@@ -684,7 +857,10 @@ class App:
         pair = self.pair_var.get()
         return pair.split(":", 1)[-1].split("<->")[0].strip() if "<->" in pair else br.USB_PORT
 
-    def quit(self):
+    def quit(self, ask=True):
+        if ask and not self.editor.confirm_close():
+            self.show() if self.root.state() != "normal" else None
+            return
         self._save()
         try:
             self._bridge_off()
@@ -695,14 +871,78 @@ class App:
             self.root.destroy()
 
 
+class SingleInstance:
+    """Only one RCX Tower window per user: only one program can use the tower, so a second
+    copy could do nothing but fail. Starting it again brings the first window to the front."""
+
+    NAME = "Local\\RCXTower-running"
+    SHOW = "Local\\RCXTower-show"
+
+    def __init__(self):
+        self.first = True
+        self._event = None
+        if not WINDOWS:
+            return
+        import ctypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateMutexW.restype = ctypes.c_void_p
+        k32.CreateEventW.restype = ctypes.c_void_p
+        k32.SetEvent.argtypes = [ctypes.c_void_p]
+        k32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+        self._k32 = k32
+        self._mutex = k32.CreateMutexW(None, False, self.NAME)   # kept until the program ends
+        self.first = ctypes.get_last_error() != 183              # ERROR_ALREADY_EXISTS
+        self._event = k32.CreateEventW(None, False, False, self.SHOW)  # auto-reset
+
+    def ask_first_to_show(self):
+        if self._event:
+            self._k32.SetEvent(self._event)
+
+    def asked_to_show(self):
+        """True once each time another copy was started."""
+        return bool(self._event) and self._k32.WaitForSingleObject(self._event, 0) == 0
+
+
 def run(selftest=False, start_hidden=False):
+    single = SingleInstance()
+    if not single.first and not selftest:
+        single.ask_first_to_show()
+        return 0
     root = tk.Tk()
-    try:
-        ttk.Style().theme_use("vista")
-    except tk.TclError:
-        pass
+    if WINDOWS:
+        try:
+            ttk.Style().theme_use("vista")
+        except tk.TclError:
+            pass
     app = App(root, start_hidden=start_hidden)
+
+    def watch_for_second_copy():
+        if single.asked_to_show():
+            diag.write("RCX Tower was started again; showing this window instead.")
+            app.show()
+        root.after(400, watch_for_second_copy)
+    if single.first:
+        watch_for_second_copy()
     if selftest:
+        def editor_checks():
+            e = app.editor
+            e.new("task main()\n{\n    SetSensor(SENSOR_1, SENSOR_TOUCH);\n    Oops(;\n    int x = 3\n}\n")
+            e.check()
+
+            def after_bad():
+                print("editor bad program:", list(e.msg_box.get(0, "end")))
+                print("editor error lines marked:", [str(r) for r in e.text.tag_ranges("errline")][:4],
+                      "| cursor at", e.text.index("insert"))
+                e.text.edit_modified(False)
+                e.new(ed.TEMPLATES[1][1])
+                tags = {t: len(e.text.tag_ranges(t)) // 2 for t in ed.COLOURS}
+                print("editor colouring (ranges per kind):", tags)
+                e.check()
+                root.after(1500, lambda: (print("editor good program:", list(e.msg_box.get(0, "end"))),
+                                          e.text.edit_modified(False)))
+            root.after(1500, after_bad)
+        root.after(300, editor_checks)
+
         app.sensor_kinds[0].set("touch")
         app.sensor_kinds[2].set("light")
         root.after(1500, app.read_sensors)
@@ -731,12 +971,14 @@ def run(selftest=False, start_hidden=False):
             print(app.rcx_var.get())
             for key, (mark, detail) in app.setup_rows.items():
                 print("setup %-8s %-6s %s" % (key, mark.get(), detail.get()))
-            print("pairs:", list(app.pair_box["values"]), "| selected:", app.pair_var.get())
-            print("bridge:", app.bridge_var.get())
-            print("bricxcc:", app.bricx_var.get())
+            print("tabs:", [app.nb.tab(t, "text").strip() for t in app.nb.tabs()])
+            if WINDOWS:
+                print("pairs:", list(app.pair_box["values"]), "| selected:", app.pair_var.get())
+                print("bridge:", app.bridge_var.get())
+                print("bricxcc:", app.bricx_var.get())
             print("sensors:", [(k.get(), v.get()) for k, v in zip(app.sensor_kinds, app.sensor_vals)])
             print("log:", app.log_box.get("1.0", "end").strip().replace("\n", " | "))
-            app.quit()
-        root.after(3000, tray_checks)
+            app.quit(ask=False)
+        root.after(3000, tray_checks if WINDOWS else report)
     root.mainloop()
     return 0

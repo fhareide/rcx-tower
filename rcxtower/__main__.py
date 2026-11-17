@@ -9,7 +9,6 @@ import argparse
 import sys
 import time
 
-from . import bridge as br
 from . import firmware as fw
 from . import nqc
 from . import tower as tw
@@ -28,8 +27,12 @@ def _bar(done, total):
 def cmd_status(a):
     paths = tw.find_tower_paths()
     if not paths:
-        print("Tower: not found (not plugged in, or WinUSB driver not bound)")
+        state = tw.tower_state()
+        print("Tower: %s" % {"nodriver": "plugged in, but no WinUSB driver is bound",
+                             "nolib": "cannot look: run  pip install pyusb libusb-package",
+                             }.get(state, "not plugged in"))
         return 2
+    print("Backend: %s" % tw.BACKEND)
     with tw.Tower(paths[0]) as t:
         v = t.control(tw.REQ_GET_VERSION)
         print("Tower: connected, firmware %d.%d build %d" % (v[4], v[5], v[6] | v[7] << 8) if len(v) >= 8
@@ -43,12 +46,17 @@ def cmd_status(a):
         print("RCX:   ROM %s, firmware %s" % (ver["rom"], ver["firmware"] if ver["has_firmware"] else "none loaded"))
         if ver["has_firmware"]:
             print("       battery %.2f V" % rcx.battery_volts())
-    pairs = br.com0com_pairs()
-    print("Virtual COM pairs: %s" % (", ".join("%s<->%s" % p for p in pairs) or "none (com0com not installed)"))
+    if sys.platform == "win32":
+        from . import bridge as br
+        pairs = br.com0com_pairs()
+        print("Virtual COM pairs: %s" % (", ".join("%s<->%s" % p for p in pairs) or "none (com0com not installed)"))
     return 0
 
 
 def cmd_driver_check(a):
+    if sys.platform != "win32":
+        print("No driver is needed on this system.")
+        return 0
     from . import driver
     info = driver.check()
     if not info["present"]:
@@ -65,6 +73,9 @@ def cmd_driver_check(a):
 
 
 def cmd_install_driver(a):
+    if sys.platform != "win32":
+        print("No driver is needed on this system.")
+        return 0
     from . import driver
     if not driver.is_admin():
         print("This needs admin rights. Use the Install tower driver button in the app.")
@@ -82,11 +93,11 @@ def cmd_firmware(a):
     with tw.Tower() as t:
         t.set_parm(tw.PARM_RANGE, tw.RANGE_LONG)
         rcx = RCX(t)
-        if not rcx.ping(retries=3):
+        if not a.fast and not rcx.ping(retries=3):
             print("RCX does not answer.")
             return 1
         start = time.monotonic()
-        ver = rcx.download_firmware(image, _bar)
+        ver = rcx.download_firmware(image, _bar, fast=a.fast, note=print)
         print("Done in %d s. RCX firmware is now %s" % (time.monotonic() - start, ver["firmware"]))
     return 0
 
@@ -113,6 +124,10 @@ def cmd_download(a):
 
 
 def cmd_bridge(a):
+    if sys.platform != "win32":
+        print("The bridge is for Windows software (BricxCC, NQC for Windows) and only runs on Windows.")
+        return 2
+    from . import bridge as br
     port = a.port or br.USB_PORT
 
     def log(direction, data):
@@ -168,6 +183,7 @@ def main(argv=None):
                    ).set_defaults(fn=cmd_install_driver)
     p = sub.add_parser("firmware", help="download firmware (.lgo) to the RCX")
     p.add_argument("file", nargs="?", help="default: the bundled LEGO firmware 3.2.8")
+    p.add_argument("--fast", action="store_true", help="quad-rate download, about three times as quick")
     p.set_defaults(fn=cmd_firmware)
     p = sub.add_parser("download", help="download an .nqc or .rcx program")
     p.add_argument("file")

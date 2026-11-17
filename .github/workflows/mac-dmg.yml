@@ -1,0 +1,45 @@
+name: Mac dmg
+
+# Builds the macOS .dmg on GitHub's Macs, since it cannot be built on Windows.
+# Start it by hand (Actions tab > Mac dmg > Run workflow) or by pushing a tag like v0.1.0.
+# The .dmg files appear under "Artifacts" on the run's page.
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  dmg:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-latest       # Apple silicon
+          - runner: macos-15-intel     # Intel
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build the app and the dmg
+        run: |
+          chmod +x build_mac.sh
+          ./build_mac.sh
+      - name: NQC build log
+        if: always()
+        run: tail -n 40 build/nqc-build.log || true
+      - name: Window self-test
+        continue-on-error: true
+        timeout-minutes: 3
+        run: |
+          "dist/RCX Tower.app/Contents/MacOS/RCX Tower" gui --selftest
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RCX-Tower-mac-${{ runner.arch }}
+          path: dist/*.dmg
+          if-no-files-found: error

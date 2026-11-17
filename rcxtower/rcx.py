@@ -2,6 +2,7 @@
 import struct
 import time
 
+from . import fastdl
 from . import tower as tw
 
 
@@ -44,6 +45,17 @@ def unframe(raw, expect, length=None):
     return None
 
 
+def unframe_fast(raw, expect, length):
+    """Fast protocol reply: reply opcode, data bytes, one checksum byte; no complements."""
+    for start in range(len(raw) - length - 1):
+        if raw[start] != expect:
+            continue
+        body = raw[start:start + 1 + length]
+        if (sum(body) & 0xFF) == raw[start + 1 + length]:
+            return bytes(body[1:])
+    return None
+
+
 class RCX:
     """Talks to one RCX through a tower.Tower."""
 
@@ -53,6 +65,13 @@ class RCX:
         self.tower = tower
         self._toggle = False
         self._synced = False
+        self.fast = False
+        try:
+            # A fast firmware download that was cut short (here or in another program) leaves
+            # the tower at 4800 baud until it is unplugged, and then nothing answers.
+            tower.set_speed(tw.SPEED_2400)
+        except OSError:
+            pass
 
     # ---- transport -------------------------------------------------------
     def request(self, payload, reply_len=0, retries=4, extra_ms=0, no_reply=False):
@@ -71,16 +90,28 @@ class RCX:
                     pass
         op = payload[0] ^ (0x08 if self._toggle else 0)
         self._toggle = not self._toggle
-        out = frame(bytes([op]) + payload[1:])
         expect = op ^ 0xFF
-        reply_bytes = 3 + 2 * ((reply_len or 0) + 2)
-        budget = (len(out) + reply_bytes) * self.BYTE_MS + 350 + extra_ms
+        if self.fast:
+            body = bytes([op]) + payload[1:]
+            out = bytes([0xFF]) + body + bytes([sum(body) & 0xFF])
+            reply_bytes = 3 + (reply_len or 0)
+            byte_ms = self.BYTE_MS / 2
+        else:
+            out = frame(bytes([op]) + payload[1:])
+            reply_bytes = 3 + 2 * ((reply_len or 0) + 2)
+            byte_ms = self.BYTE_MS
+        budget = (len(out) + reply_bytes) * byte_ms + 350 + extra_ms
         last = b""
-        for _ in range(max(1, retries)):
-            self.tower.drain()
+        for attempt in range(max(1, retries)):
+            if tw.trace:
+                tw.trace("cmd %02X (%d data bytes, expecting %s reply bytes, %s, try %d of %d, wait %d ms)" % (
+                    payload[0], len(payload) - 1, reply_len, "fast" if self.fast else "normal",
+                    attempt + 1, max(1, retries), budget))
+            if not self.tower.drain() and tw.trace:
+                tw.trace("the receiver is not quiet: something else is sending infrared")
             self.tower.write(out)
             if no_reply:
-                time.sleep(len(out) * self.BYTE_MS / 1000.0 + 0.05)
+                time.sleep(len(out) * byte_ms / 1000.0 + 0.05)
                 return b""
             buf = bytearray()
             end = time.monotonic() + budget / 1000.0
@@ -88,7 +119,11 @@ class RCX:
                 pkt = self.tower.read_packet(30)
                 if pkt:
                     buf += pkt
-                    if reply_len is not None:
+                    if self.fast:
+                        got = unframe_fast(buf, expect, reply_len or 0)
+                        if got is not None:
+                            return got
+                    elif reply_len is not None:
                         got = unframe(buf, expect, reply_len)
                         if got is not None:
                             return got
@@ -97,6 +132,8 @@ class RCX:
                     if got is not None:
                         return got
             last = bytes(buf)
+            if tw.trace:
+                tw.trace("no valid reply to %02X; received %d bytes" % (payload[0], len(last)))
         raise NoReply("no reply to opcode 0x%02X (last bytes: %s)" % (
             payload[0], " ".join("%02X" % b for b in last) or "none"))
 
@@ -198,8 +235,48 @@ class RCX:
                 progress(done, total)
         return done
 
-    def download_firmware(self, image, progress=None):
-        """image: bytes starting at address 0x8000 (see firmware.load_srec)."""
+    def set_fast(self, on):
+        """Switch tower and framing between the normal and the fast protocol."""
+        self.tower.set_speed(tw.SPEED_4800 if on else tw.SPEED_2400)
+        self.fast = bool(on)
+        self._synced = False
+
+    def download_firmware(self, image, progress=None, fast=False, note=None):
+        """image: bytes starting at address 0x8000 (see firmware.load_srec).
+
+        fast: "quad-rate" download. A small stub is sent first at normal speed; it makes
+        the RCX talk at 4800 baud without complement bytes. note(text) reports the steps.
+        """
+        note = note or (lambda text: None)
+        if not fast:
+            self._send_firmware(image, progress)
+        else:
+            try:
+                if self.ping(retries=3):
+                    note("Sending the fast download helper...")
+                    self._send_firmware(fastdl.stub(keep_parity=True))
+                    time.sleep(0.3)
+                else:
+                    # an earlier attempt that was cut short leaves the RCX in fast mode
+                    note("No answer at normal speed. Trying fast mode...")
+                self.set_fast(True)
+                if not self.ping(retries=3):
+                    raise RCXError("the RCX does not answer in fast mode. Switch it off and on again, "
+                                   "then retry (or untick Fast)")
+                note("The RCX answers in fast mode. Sending the firmware...")
+                self._send_firmware(image, progress)
+            finally:
+                try:
+                    self.set_fast(False)   # the started firmware talks at normal speed again
+                except OSError:
+                    pass
+        time.sleep(0.5)
+        v = self.versions()
+        if not v["has_firmware"]:
+            raise RCXError("firmware was sent but the RCX did not start it (checksum mismatch?)")
+        return v
+
+    def _send_firmware(self, image, progress=None):
         start = 0x8000
         check = sum(image[:0x4C00]) & 0xFFFF
         self.request([0x65, 1, 3, 5, 7, 11], 0, extra_ms=500)           # delete old firmware
@@ -208,13 +285,8 @@ class RCX:
         try:
             self.request(b"\xA5LEGO\xAE", 25, retries=3, extra_ms=3000)  # unlock
         except NoReply:
-            # the unlock reply is often lost; the versions check below is what counts
+            # the unlock reply is often lost; the versions check afterwards is what counts
             pass
-        time.sleep(0.5)
-        v = self.versions()
-        if not v["has_firmware"]:
-            raise RCXError("firmware was sent but the RCX did not start it (checksum mismatch?)")
-        return v
 
     def download_program(self, image, slot=None, progress=None):
         """image: bytes of an NQC .rcx file. slot 1..5, or None for the current one."""

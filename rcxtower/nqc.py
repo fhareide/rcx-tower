@@ -12,28 +12,37 @@ class CompileError(Exception):
 
 def find_nqc():
     here = os.path.dirname(os.path.abspath(sys.argv[0] or "."))
+    name = "nqc.exe" if sys.platform == "win32" else "nqc"
     candidates = [
-        os.path.join(getattr(sys, "_MEIPASS", here), "nqc.exe"),
-        os.path.join(here, "nqc.exe"),
+        os.path.join(getattr(sys, "_MEIPASS", here), name),  # bundled into a packaged app
+        os.path.join(here, name),
         shutil.which("nqc") or "",
-        os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "BricxCC", "nqc.exe"),
-        os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "BricxCC", "nqc.exe"),
     ]
+    if sys.platform == "win32":
+        candidates += [
+            os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "BricxCC", name),
+            os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "BricxCC", name),
+        ]
+    else:
+        # a program started from the Finder does not get the shell's PATH
+        candidates += ["/opt/homebrew/bin/nqc", "/usr/local/bin/nqc", os.path.expanduser("~/bin/nqc")]
     for c in candidates:
         if c and os.path.isfile(c):
             return c
     return None
 
 
-def compile_nqc(source_path, target="RCX2", nqc_path=None):
+def compile_nqc(source_path, target="RCX2", nqc_path=None, include_dirs=()):
     """Compile an .nqc file; returns the .rcx image bytes. Raises CompileError with NQC's messages."""
     nqc_path = nqc_path or find_nqc()
     if not nqc_path:
-        raise CompileError("nqc.exe not found. Install BricxCC or put nqc.exe next to this program.")
+        raise CompileError("The NQC compiler was not found. On Windows install BricxCC; elsewhere build NQC "
+                           "and put 'nqc' on your PATH. See the Setup tab.")
     fd, out = tempfile.mkstemp(suffix=".rcx")
     os.close(fd)
     try:
-        r = subprocess.run([nqc_path, "-T" + target, "-O" + out, source_path],
+        includes = ["-I" + d for d in include_dirs if d]
+        r = subprocess.run([nqc_path, "-T" + target, "-O" + out] + includes + [source_path],
                            capture_output=True, text=True, errors="replace",
                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         messages = (r.stdout + r.stderr).strip()
