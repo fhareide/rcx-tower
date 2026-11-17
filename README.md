@@ -205,9 +205,16 @@ Two things in this project are not covered by it:
 
 - `rcxtower/data/firm0328.lgo` is the LEGO RCX firmware 3.2.8, copyright The LEGO Group. It comes
   from the LEGO Mindstorms SDK 2.5 and is included for convenience only.
-- `RCX Tower.exe` builds include `nqc.exe` when BricxCC is installed on the build machine. NQC
-  (Not Quite C, by Dave Baum and John Hansen) is under the Mozilla Public License 1.0; its source
-  is at <https://bricxcc.sourceforge.net/nqc/>.
+- `vendor/windows/nqc.exe` (from BricxCC 3.3), which `RCX Tower.exe` builds include, and the
+  NQC the Mac build compiles from <https://github.com/BrickBot/nqc>. NQC (Not Quite C, by Dave
+  Baum and John Hansen) is under the Mozilla Public License 1.0; its source is at
+  <https://bricxcc.sourceforge.net/nqc/>.
+
+## Releases
+
+Downloads are published at <https://github.com/fhareide/rcx-tower-releases>. To make one, bump
+`__version__` in `rcxtower/__init__.py`, add its section to [CHANGELOG.md](CHANGELOG.md) and push
+to main; `.github/workflows/build.yml` builds the Windows exe and both Mac dmgs and publishes them.
 
 LEGO and Mindstorms are trademarks of the LEGO Group, which does not sponsor or endorse this
 project.
