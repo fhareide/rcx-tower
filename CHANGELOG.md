@@ -1,7 +1,8 @@
 # Changelog
 
 Each release's note is its section here. To release: bump `__version__` in
-`rcxtower/__init__.py`, add a `## <version>` section below, and push to main.
+`rcxtower/__init__.py`, add a `## <version>` section below, commit, then push a `v<version>`
+tag (see "Releases" in the README).
 
 ## 0.1.0
 

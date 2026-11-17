@@ -212,9 +212,15 @@ Two things in this project are not covered by it:
 
 ## Releases
 
-Downloads are published at <https://github.com/fhareide/rcx-tower-releases>. To make one, bump
-`__version__` in `rcxtower/__init__.py`, add its section to [CHANGELOG.md](CHANGELOG.md) and push
-to main; `.github/workflows/build.yml` builds the Windows exe and both Mac dmgs and publishes them.
+Downloads are published at <https://github.com/fhareide/rcx-tower-releases>, whose workflow
+builds the Windows exe and both Mac dmgs from this repo. To make a release:
+
+1. Once per clone, install the hook: `cp tools/hooks/pre-push .git/hooks/pre-push` (needs `gh`
+   logged in).
+2. Bump `__version__` in `rcxtower/__init__.py` and add its section to [CHANGELOG.md](CHANGELOG.md)
+   (the section becomes the release note). Commit and push.
+3. Tag and push the tag: `git tag v0.1.1 && git push origin v0.1.1`. The hook tags the releases
+   repo too, which starts the build there.
 
 LEGO and Mindstorms are trademarks of the LEGO Group, which does not sponsor or endorse this
 project.
