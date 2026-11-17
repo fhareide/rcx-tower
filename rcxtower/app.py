@@ -119,6 +119,13 @@ class App:
         root.minsize(720, 640)
         root.geometry("860x760")
         self.mono_font = MONO_FONT
+        # Colours must follow the system's light or dark appearance (macOS dark mode in particular).
+        try:
+            r, g, b = root.winfo_rgb(ttk.Style().lookup("TFrame", "background") or root.cget("background"))
+            self.dark = (0.299 * r + 0.587 * g + 0.114 * b) / 65535.0 < 0.5 or bool(os.environ.get("RCXTOWER_DARK"))
+        except tk.TclError:
+            self.dark = False
+        self.muted = "#b4b4b4" if self.dark else "#555555"   # explanatory text under the controls
         root.protocol("WM_DELETE_WINDOW", self.on_close)
         if os.path.isfile(ICON):
             try:
@@ -192,7 +199,7 @@ class App:
         ttk.Checkbutton(fwf, text="Fast", variable=self.fw_fast).grid(row=0, column=3, padx=(6, 0))
         ttk.Label(fwf, text=("Leave the box empty to use the built-in LEGO firmware 3.2.8. " if fw.bundled_path() else "")
                   + "Needed once after the batteries have been out. Takes about a minute and a half with Fast ticked, "
-                    "about four minutes without; keep the RCX close to the tower.", wraplength=540, foreground="#555").grid(
+                    "about four minutes without; keep the RCX close to the tower.", wraplength=540, foreground=self.muted).grid(
             row=1, column=0, columnspan=4, sticky="w", pady=(4, 0))
         fwf.columnconfigure(0, weight=1)
 
@@ -257,7 +264,7 @@ class App:
         self.sensor_auto = tk.BooleanVar(value=False)
         ttk.Checkbutton(vf, text="Keep reading", variable=self.sensor_auto,
                         command=self.read_sensors).grid(row=1, column=3, padx=(10, 0), sticky="w")
-        ttk.Label(f, text="Motor, sound and sensor control need firmware on the RCX.", foreground="#555").pack(anchor="w", pady=(8, 0))
+        ttk.Label(f, text="Motor, sound and sensor control need firmware on the RCX.", foreground=self.muted).pack(anchor="w", pady=(8, 0))
         return f
 
     def _tab_bridge(self, parent):
@@ -280,14 +287,14 @@ class App:
         self.bridge_var = tk.StringVar(value="Bridge is off.")
         ttk.Label(f, textvariable=self.bridge_var, font=(UI_FONT, 10, "bold"), wraplength=560).pack(anchor="w", pady=(10, 0))
         self.bridge_hint = tk.StringVar(value="")
-        ttk.Label(f, textvariable=self.bridge_hint, wraplength=560, foreground="#555").pack(anchor="w", pady=(4, 0))
+        ttk.Label(f, textvariable=self.bridge_hint, wraplength=560, foreground=self.muted).pack(anchor="w", pady=(4, 0))
 
         bx = ttk.LabelFrame(f, text="BricxCC", padding=8)
         bx.pack(fill="x", pady=(12, 0))
         self.bricx_btn = ttk.Button(bx, text="Start BricxCC", command=self.start_bricxcc)
         self.bricx_btn.pack(side="left")
         self.bricx_var = tk.StringVar(value="")
-        ttk.Label(bx, textvariable=self.bricx_var, wraplength=430, foreground="#444").pack(side="left", padx=10)
+        ttk.Label(bx, textvariable=self.bricx_var, wraplength=430, foreground=self.muted).pack(side="left", padx=10)
 
         opts = ttk.LabelFrame(f, text="Running in the background", padding=8)
         opts.pack(fill="x", pady=(12, 0))
@@ -383,7 +390,8 @@ class App:
             )
         else:
             items = (
-                ("tower", "1. USB access (pyusb and libusb)", "How to install", PYUSB_URL),
+                ("tower", "1. USB access" if FROZEN else "1. USB access (pyusb and libusb)",
+                 "How to install", PYUSB_URL),
                 ("nqc", "2. NQC compiler (to download .nqc programs)", "Get NQC", NQC_URL),
             )
         for key, title, btn, url in items:
@@ -396,15 +404,17 @@ class App:
             action = url if callable(url) else (lambda u=url: webbrowser.open(u))
             button = ttk.Button(box, text=btn, command=action)
             button.grid(row=0, column=2, sticky="e")
-            ttk.Label(box, textvariable=detail, wraplength=440, foreground="#444").grid(row=1, column=1, sticky="w")
+            ttk.Label(box, textvariable=detail, wraplength=440, foreground=self.muted).grid(row=1, column=1, sticky="w")
             box.columnconfigure(1, weight=1)
             self.setup_rows[key] = (mark, detail)
             self.setup_buttons[key] = button
+            if not WINDOWS and FROZEN and key == "tower":
+                button.grid_remove()   # the packaged app has the USB library inside
         ttk.Separator(f).pack(fill="x", pady=(12, 8))
         box = ttk.Frame(f)
         box.pack(fill="x")
         ttk.Label(box, text="Something not working?", font=(UI_FONT, 10, "bold")).grid(row=0, column=0, sticky="w")
-        ttk.Label(box, wraplength=440, foreground="#444",
+        ttk.Label(box, wraplength=440, foreground=self.muted,
                   text="Copy diagnostics tests the tower and the RCX and copies the result, with the recent log, "
                        "so you can paste it into a message.").grid(row=1, column=0, sticky="w")
         ttk.Button(box, text="Copy diagnostics", command=self.copy_diagnostics).grid(row=0, column=1, sticky="e")
@@ -591,7 +601,7 @@ class App:
                 return
             v = rcx.versions()
             if v["has_firmware"]:
-                text = "RCX: firmware %s, battery %.1f V" % (v["firmware"], rcx.battery_volts())
+                text = "RCX: firmware %s, ROM %s, battery %.1f V" % (v["firmware"], v["rom"], rcx.battery_volts())
             else:
                 text = "RCX: answering, but no firmware loaded (ROM %s)" % v["rom"]
             self.events.put(("rcx", text))
@@ -656,7 +666,7 @@ class App:
             v = rcx.download_firmware(image, lambda d, t: self.events.put(("progress", 100.0 * d / t)),
                                       fast=fast, note=self.log)
             self.log("Firmware %s installed in %d seconds." % (v["firmware"], time.monotonic() - start))
-            self.events.put(("rcx", "RCX: firmware %s" % v["firmware"]))
+            self.events.put(("rcx", "RCX: firmware %s, ROM %s" % (v["firmware"], v["rom"])))
         self.submit("Downloading firmware", job)
 
     def do_program(self):
@@ -791,9 +801,11 @@ class App:
             detail.set("Found: %s" % path if path else
                        "Install BricxCC (it includes nqc.exe), or put nqc.exe next to this program.")
         else:
-            detail.set("Found: %s" % path if path else
+            detail.set(("Built in." if FROZEN and path.startswith(getattr(sys, "_MEIPASS", "\0")) else
+                        "Found: %s" % path) if path else
                        "Build NQC from its source and put the 'nqc' program on your PATH or next to this app. "
                        "Ready-made .rcx files can be downloaded without it.")
+            self.setup_buttons["nqc"].state(["disabled"] if path else ["!disabled"])
         if WINDOWS:
             self._tick_windows()
         self.root.after(1500, self._tick)

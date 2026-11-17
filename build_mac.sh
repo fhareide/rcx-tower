@@ -34,9 +34,12 @@ elif [ "${SKIP_NQC:-}" != "1" ]; then
     fi
     if [ -d build/nqc-src ]; then
         (cd build/nqc-src && make) > build/nqc-build.log 2>&1 || true
-        if [ -x build/nqc-src/bin/nqc ]; then
-            NQC_BIN="build/nqc-src/bin/nqc"
-        fi
+        for candidate in build/nqc-src/build/bin/nqc build/nqc-src/bin/nqc; do
+            if [ -x "$candidate" ]; then
+                NQC_BIN="$candidate"
+                break
+            fi
+        done
     fi
 fi
 EXTRA=()

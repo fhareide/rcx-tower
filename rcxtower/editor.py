@@ -38,6 +38,13 @@ HIGHLIGHT = re.compile("|".join([
 
 COLOURS = {"com": "#2e7d32", "str": "#a31515", "pre": "#7b3fa0", "num": "#b5651d",
            "kw": "#0033b3", "api": "#00627a", "const": "#8a5a00"}
+# the same kinds on a dark background
+COLOURS_DARK = {"com": "#7fbf7f", "str": "#e39a8a", "pre": "#c99be0", "num": "#e0b070",
+                "kw": "#7aa8ff", "api": "#5cc8d8", "const": "#e0c070"}
+# everything else that has a fixed colour: (light, dark)
+SHADES = {"gutter": ("#f0f0f0", "#2a2a2a"), "number": ("#888888", "#8a8a8a"),
+          "errline": ("#ffd6d6", "#5a2626"), "warnline": ("#fff3bf", "#4e4520"),
+          "ok": ("#1b6e1b", "#7fd67f"), "bad": ("#b00020", "#ff8a8a")}
 
 TEMPLATES = [
     ("Empty program", "task main()\n{\n    \n}\n"),
@@ -150,11 +157,20 @@ class Editor(ttk.Frame):
         self._update_title()
 
     # ---- layout ----------------------------------------------------------
+    def _shade(self, name):
+        return SHADES[name][1 if self._dark else 0]
+
     def _build(self):
+        self._dark = bool(getattr(self.app, "dark", False))
+        muted = getattr(self.app, "muted", "#555555")
+        native = sys.platform == "win32" and not os.environ.get("RCXTOWER_PORTABLE_UI")   # elsewhere buttons are wider: use two rows and natural widths
         bar = ttk.Frame(self)
         bar.pack(fill="x")
         for label, cmd in (("New", self.new), ("Open...", self.open), ("Save", self.save), ("Save as...", self.save_as)):
-            ttk.Button(bar, text=label, command=cmd, width=len(label) + 1).pack(side="left", padx=(0, 3))
+            button = ttk.Button(bar, text=label, command=cmd)
+            if native:
+                button.configure(width=len(label) + 1)
+            button.pack(side="left", padx=(0, 3))
 
         insert = ttk.Menubutton(bar, text="Insert")
         menu = tk.Menu(insert, tearoff=False)
@@ -168,6 +184,9 @@ class Editor(ttk.Frame):
         insert["menu"] = menu
         insert.pack(side="left", padx=(6, 0))
 
+        if not native:
+            bar = ttk.Frame(self)
+            bar.pack(fill="x", pady=(4, 0))
         ttk.Button(bar, text="Stop (F8)", command=self.stop_program).pack(side="right")
         ttk.Button(bar, text="Run (F7)", command=self.run_program).pack(side="right", padx=3)
         ttk.Button(bar, text="Download (F6)", command=self.download).pack(side="right")
@@ -176,7 +195,7 @@ class Editor(ttk.Frame):
         ttk.Label(bar, text="Slot").pack(side="right", padx=(0, 3))
 
         self.title_var = tk.StringVar()
-        ttk.Label(self, textvariable=self.title_var, foreground="#555").pack(anchor="w", pady=(4, 2))
+        ttk.Label(self, textvariable=self.title_var, foreground=muted).pack(anchor="w", pady=(4, 2))
 
         # messages go in first (at the bottom) so the editor gets the space that is left
         self.msg_box = tk.Listbox(self, height=4, activestyle="none", font=(self.app.mono_font, 9))
@@ -186,7 +205,7 @@ class Editor(ttk.Frame):
         body = ttk.Frame(self)
         body.pack(fill="both", expand=True)
         font = (self.app.mono_font, 11)
-        self.gutter = tk.Canvas(body, width=38, highlightthickness=0, background="#f0f0f0")
+        self.gutter = tk.Canvas(body, width=38, highlightthickness=0, background=self._shade("gutter"))
         self.gutter.pack(side="left", fill="y")
         scroll = ttk.Scrollbar(body, orient="vertical")
         scroll.pack(side="right", fill="y")
@@ -197,11 +216,11 @@ class Editor(ttk.Frame):
         scroll.configure(command=self.text.yview)
         self._font = font
 
-        for tag, colour in COLOURS.items():
+        for tag, colour in (COLOURS_DARK if self._dark else COLOURS).items():
             self.text.tag_configure(tag, foreground=colour)
         self.text.tag_configure("com", font=(font[0], font[1], "italic"))
-        self.text.tag_configure("errline", background="#ffd6d6")
-        self.text.tag_configure("warnline", background="#fff3bf")
+        self.text.tag_configure("errline", background=self._shade("errline"))
+        self.text.tag_configure("warnline", background=self._shade("warnline"))
         self.text.tag_raise("sel")
 
         t = self.text
@@ -272,7 +291,7 @@ class Editor(ttk.Frame):
             if info is None:
                 break
             number = index.split(".")[0]
-            g.create_text(34, info[1] + 2, anchor="ne", text=number, fill="#888", font=(self._font[0], 9))
+            g.create_text(34, info[1] + 2, anchor="ne", text=number, fill=self._shade("number"), font=(self._font[0], 9))
             index = self.text.index("%s+1line" % index)
             if index.split(".")[0] == number:
                 break
@@ -374,7 +393,7 @@ class Editor(ttk.Frame):
         """Runs on the window's thread. output is NQC's text; summary is the headline."""
         self.clear_messages()
         self.msg_box.insert("end", summary)
-        self.msg_box.itemconfigure(0, foreground="#1b6e1b" if ok else "#b00020")
+        self.msg_box.itemconfigure(0, foreground=self._shade("ok" if ok else "bad"))
         self._messages = [None]
         mine = os.path.basename(self._compile_name)
         for kind, message, fname, lineno in parse_messages(output):
