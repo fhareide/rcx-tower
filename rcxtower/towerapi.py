@@ -133,7 +133,13 @@ def default_folder():
     return os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "rcxtower", "towerapi")
 
 
-def find_bricxcc():
+BACKUP_NAME = "TOWERAPI.DLL.lego-backup"  # LEGO's own DLL, kept when ours replaces it
+
+
+def find_bricxcc(chosen=None):
+    """BricxCC.exe: the one the user chose (if it still exists), else the one in Program Files."""
+    if chosen and os.path.isfile(chosen):
+        return chosen
     for env in ("ProgramFiles(x86)", "ProgramFiles"):
         base = os.environ.get(env)
         if base:
@@ -143,38 +149,99 @@ def find_bricxcc():
     return None
 
 
-def bricxcc_state(exe):
-    """How BricxCC at `exe` will find TOWERAPI.DLL.
+def is_standin(data):
+    """True for any version of the DLL `build` makes (LEGO's own is far larger, with a DOS stub)."""
+    return (len(data) <= 4096 and data[:2] == b"MZ" and data[0x3C:0x40] == struct.pack("<I", 64)
+            and b"LEGOTowerSetIRSpeed" in data)
 
-    'ready'    our stand-in is in BricxCC's own folder (always wins)
-    'portable' no other copy exists, so starting BricxCC from our folder is enough
-    'blocked'  another TOWERAPI.DLL (LEGO's own, from the SDK or the RIS software) is in
-               BricxCC's folder or the Windows system folder and would be loaded instead;
-               the stand-in must be copied into BricxCC's folder, which needs admin rights
+
+def _read(path):
+    try:
+        with open(path, "rb") as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def bricxcc_state(exe):
+    """Which TOWERAPI.DLL is in BricxCC's own folder, where Windows looks first.
+
+    'ready'    our current stand-in: BricxCC can use the USB bridge however it is started
+    'outdated' an older version of our stand-in
+    'lego'     another TOWERAPI.DLL (LEGO's own, from the SDK or the RIS software); it needs
+               LEGO's 32-bit driver, which 64-bit Windows does not have
+    'missing'  none: BricxCC refuses to use a USB tower unless started by RCX Tower
     """
-    local = os.path.join(os.path.dirname(exe), DLL_NAME)
-    if os.path.isfile(local):
-        try:
-            with open(local, "rb") as f:
-                return "ready" if f.read() == build() else "blocked"
-        except OSError:
-            return "blocked"
+    data = _read(os.path.join(os.path.dirname(exe), DLL_NAME))
+    if data is None:
+        return "missing"
+    if data == build():
+        return "ready"
+    return "outdated" if is_standin(data) else "lego"
+
+
+def system_copy():
+    """A TOWERAPI.DLL in a Windows folder that a 32-bit BricxCC searches, or None."""
     windir = os.environ.get("WINDIR", r"C:\Windows")
-    for sub in ("SysWOW64", "System32", "System", ""):  # where a 32-bit program looks before the start folder
-        if os.path.isfile(os.path.join(windir, sub, DLL_NAME)):
+    for sub in ("SysWOW64", "System32", "System", ""):
+        path = os.path.join(windir, sub, DLL_NAME)
+        if os.path.isfile(path):
             if sub == "System32" and os.path.isdir(os.path.join(windir, "SysWOW64")):
                 continue  # 64-bit system folder: a 32-bit BricxCC never sees it
-            return "blocked"
-    return "portable"
+            return path
+    return None
+
+
+def install_commands(exe):
+    """The copy commands that put the stand-in into BricxCC's folder, keeping LEGO's DLL."""
+    src = install(default_folder())
+    folder = os.path.dirname(exe)
+    dst = os.path.join(folder, DLL_NAME)
+    backup = os.path.join(folder, BACKUP_NAME)
+    commands = []
+    if bricxcc_state(exe) == "lego" and not os.path.exists(backup):
+        commands.append('copy /y "%s" "%s"' % (dst, backup))
+    commands.append('copy /y "%s" "%s"' % (src, dst))
+    return commands
 
 
 def copy_into_bricxcc(exe):
-    """Copy the stand-in into BricxCC's folder with an admin prompt. True if the prompt was started."""
+    """Put the stand-in into BricxCC's folder; LEGO's own DLL there is kept as BACKUP_NAME.
+
+    Returns 'done' when the folder is writable (BricxCC outside Program Files), 'prompt' when
+    Windows was asked for permission (the copy then happens in another process, so poll
+    bricxcc_state), or 'cancelled'.
+    """
+    folder = os.path.dirname(exe)
+    try:
+        if bricxcc_state(exe) == "lego" and not os.path.exists(os.path.join(folder, BACKUP_NAME)):
+            os.replace(os.path.join(folder, DLL_NAME), os.path.join(folder, BACKUP_NAME))
+        install(folder)
+        return "done"
+    except OSError:
+        pass  # Program Files: needs admin rights
     import ctypes
-    src = install(default_folder())
-    dst = os.path.join(os.path.dirname(exe), DLL_NAME)
-    args = '/c copy /y "%s" "%s"' % (src, dst)
-    return ctypes.windll.shell32.ShellExecuteW(None, "runas", "cmd.exe", args, None, 0) > 32
+    args = "/c " + " && ".join(install_commands(exe))
+    started = ctypes.windll.shell32.ShellExecuteW(None, "runas", "cmd.exe", args, None, 0) > 32
+    return "prompt" if started else "cancelled"
+
+
+def describe(exe):
+    """Lines for the diagnostics report."""
+    if not exe:
+        return ["BricxCC: not found"]
+    lines = ["BricxCC: %s" % exe,
+             "TOWERAPI.DLL in the BricxCC folder: %s" % {
+                 "ready": "RCX Tower's (current)", "outdated": "RCX Tower's (older version)",
+                 "lego": "another one, probably LEGO's  <-- BricxCC cannot use the USB bridge",
+                 "missing": "none  <-- BricxCC works over USB only when started from RCX Tower",
+             }[bricxcc_state(exe)]]
+    if os.path.exists(os.path.join(os.path.dirname(exe), BACKUP_NAME)):
+        lines.append("LEGO's TOWERAPI.DLL kept as: %s" % BACKUP_NAME)
+    copy = system_copy()
+    if copy:
+        lines.append("TOWERAPI.DLL in a Windows folder: %s" % copy)
+    return lines
 
 
 def start_bricxcc(exe):

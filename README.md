@@ -174,10 +174,12 @@ Leave "fast" firmware mode off in either case.
 
 BricxCC only uses a USB tower through LEGO's `TOWERAPI.DLL` and refuses to connect without it.
 LEGO's DLL needs LEGO's 32-bit driver, so RCX Tower generates a stand-in (`rcxtower/towerapi.py`,
-52 functions that do nothing) and the **Start BricxCC** button makes BricxCC load it. If LEGO's
-own DLL is already on the PC (installed by the LEGO SDK or RIS software into the Windows folder),
-the stand-in has to be copied into the BricxCC folder, which takes one admin prompt. NQC needs
-none of this.
+52 functions that do nothing). The first click on **Start BricxCC**, or **Set up BricxCC** on the
+Setup tab, copies it into the BricxCC folder, which takes one admin prompt. After that BricxCC can
+use the USB bridge however it is started, also from its own shortcut. A LEGO `TOWERAPI.DLL`
+already in that folder is kept as `TOWERAPI.DLL.lego-backup`; one in the Windows folder (from the
+LEGO SDK or RIS software) is left alone, since the copy in BricxCC's folder is found first. If
+BricxCC is not in Program Files, click **Choose...** on the Bridge tab. NQC needs none of this.
 
 ### How USB mode works without a driver
 

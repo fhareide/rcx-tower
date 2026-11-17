@@ -4,6 +4,16 @@ Each release's note is its section here. To release: bump `__version__` in
 `rcxtower/__init__.py`, add a `## <version>` section below, commit, then push a `v<version>`
 tag (see "Releases" in the README).
 
+## 0.1.1
+
+- BricxCC: RCX Tower's TOWERAPI.DLL is now copied into the BricxCC folder once (one Windows
+  permission prompt), so BricxCC connects over USB however it is started, also from its own
+  shortcut. Before, it only connected when started with the Start BricxCC button.
+  A LEGO TOWERAPI.DLL in that folder is kept as a backup.
+- Setup tab: new "BricxCC over USB" step showing whether the DLL is in place.
+- Bridge tab: Choose... for a BricxCC installed outside Program Files.
+- Copy diagnostics now reports where BricxCC is and which TOWERAPI.DLL it will load.
+
 ## 0.1.0
 
 The first release.

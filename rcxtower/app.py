@@ -293,6 +293,7 @@ class App:
         bx.pack(fill="x", pady=(12, 0))
         self.bricx_btn = ttk.Button(bx, text="Start BricxCC", command=self.start_bricxcc)
         self.bricx_btn.pack(side="left")
+        ttk.Button(bx, text="Choose...", command=self.choose_bricxcc).pack(side="right")
         self.bricx_var = tk.StringVar(value="")
         ttk.Label(bx, textvariable=self.bricx_var, wraplength=430, foreground=self.muted).pack(side="left", padx=10)
 
@@ -309,28 +310,70 @@ class App:
             cb.configure(state="disabled", text="Start with Windows, hidden in the tray (only in RCX Tower.exe)")
         return f
 
+    def _bricxcc_exe(self):
+        return ta.find_bricxcc(self.settings.get("bricxcc_path"))
+
+    def choose_bricxcc(self):
+        """Point RCX Tower at a BricxCC that is not in Program Files."""
+        exe = self._bricxcc_exe()
+        path = filedialog.askopenfilename(title="Where is BricxCC.exe?", filetypes=[("BricxCC", "BricxCC.exe"),
+                                          ("Programs", "*.exe")], initialdir=os.path.dirname(exe) if exe else None)
+        if path:
+            self.settings["bricxcc_path"] = os.path.normpath(path)
+            save_settings(self.settings)
+            self.log("Using BricxCC at %s." % os.path.normpath(path))
+
+    def _install_standin(self, exe):
+        """Put RCX Tower's TOWERAPI.DLL into BricxCC's folder (runs on the worker). True when it is there."""
+        state = ta.bricxcc_state(exe)
+        if state == "ready":
+            return True
+        self.log({"missing": "Putting RCX Tower's TOWERAPI.DLL into the BricxCC folder, so BricxCC can use the "
+                             "tower however it is started.",
+                  "outdated": "Updating RCX Tower's TOWERAPI.DLL in the BricxCC folder.",
+                  "lego": "The BricxCC folder has LEGO's TOWERAPI.DLL, which cannot work on 64-bit Windows. "
+                          "Replacing it with RCX Tower's; LEGO's is kept as %s." % ta.BACKUP_NAME}[state])
+        try:
+            result = ta.copy_into_bricxcc(exe)
+        except OSError as e:
+            self.log("Could not write the file: %s" % e)
+            return False
+        if result == "prompt":
+            self.log("Windows asks for permission, since BricxCC is in Program Files.")
+            for _ in range(60):
+                time.sleep(0.5)
+                if ta.bricxcc_state(exe) == "ready":
+                    break
+        if ta.bricxcc_state(exe) == "ready":
+            self.log("Done: BricxCC can now use the USB bridge, also when started from its own shortcut.")
+            return True
+        self.log("The file did not arrive in the BricxCC folder (permission refused, or BricxCC is running "
+                 "and holds the old file: close it and try again).")
+        return False
+
+    def setup_bricxcc(self):
+        exe = self._bricxcc_exe()
+        if not exe:
+            self.log("BricxCC was not found. Install it, or choose BricxCC.exe on the Bridge tab.")
+            return
+        self.submit("Setting up BricxCC", lambda: self._install_standin(exe), raw=True)
+
     def start_bricxcc(self):
         """Start BricxCC so it can use the USB bridge: give it our TOWERAPI.DLL and run the bridge."""
-        exe = ta.find_bricxcc()
+        exe = self._bricxcc_exe()
         if not exe:
-            self.log("BricxCC is not installed in Program Files. See the Setup tab.")
+            self.log("BricxCC was not found in Program Files. Click Choose... to say where BricxCC.exe is.")
             return
-        state = ta.bricxcc_state(exe)
 
         def job():
-            if state == "blocked":
-                self.log("Another TOWERAPI.DLL on this PC would be used instead of RCX Tower's. Copying ours into "
-                         "the BricxCC folder; Windows will ask for permission.")
-                if not ta.copy_into_bricxcc(exe):
-                    self.log("The copy was cancelled, so BricxCC cannot use the USB bridge yet.")
+            if not self._install_standin(exe):
+                # Without the file in its folder, BricxCC still finds ours when started from our folder,
+                # unless LEGO's DLL is in its folder or in a Windows folder.
+                if ta.bricxcc_state(exe) == "lego" or ta.system_copy():
+                    self.log("BricxCC would load LEGO's TOWERAPI.DLL, so it cannot use the USB bridge yet.")
                     return
-                for _ in range(60):
-                    time.sleep(0.5)
-                    if ta.bricxcc_state(exe) == "ready":
-                        break
-                else:
-                    self.log("The file did not arrive in the BricxCC folder. Was the permission prompt refused?")
-                    return
+                self.log("Starting BricxCC anyway: it works over USB this time, as RCX Tower starts it. Started "
+                         "from its own shortcut it will not, until the file is in its folder.")
             if not isinstance(self.bridge, br.UsbBridge):
                 self._bridge_off()
                 self._bridge_on(br.USB_PORT)
@@ -386,6 +429,7 @@ class App:
             items = (
                 ("tower", "1. USB tower driver (WinUSB)", "Install tower driver", self.install_driver),
                 ("nqc", "2. NQC compiler (to download .nqc programs)", "Get BricxCC", BRICXCC_URL),
+                ("bricxcc", "Optional: BricxCC over USB (TOWERAPI.DLL)", "Set up BricxCC", self.setup_bricxcc),
                 ("com0com", "Optional: virtual COM port (only for COM port mode)", "Get com0com", COM0COM_URL),
             )
         else:
@@ -485,6 +529,11 @@ class App:
         if self.bridge is not None:
             bridge = "running, %s" % type(self.bridge).__name__
         extra = ["Status shown: %s | %s" % (self.tower_var.get(), self.rcx_var.get())]
+        if WINDOWS:
+            try:
+                extra += ta.describe(self._bricxcc_exe())
+            except Exception as e:  # the report must still be made
+                extra.append("BricxCC: could not look (%s: %s)" % (type(e).__name__, e))
 
         running = self._job
         if running:
@@ -844,18 +893,38 @@ class App:
             self.bridge_var.set("Bridge is off.")
             self.bridge_hint.set("")
             self.bridge_btn.configure(text="Start bridge")
-        exe = ta.find_bricxcc()
+        exe = self._bricxcc_exe()
+        mark, detail = self.setup_rows["bricxcc"]
         if not exe:
-            self.bricx_var.set("BricxCC is not installed.")
+            self.bricx_var.set("BricxCC was not found. If it is installed elsewhere, click Choose...")
             self.bricx_btn.state(["disabled"])
+            mark.set("not used")
+            detail.set("BricxCC was not found. Not needed for RCX Tower's own editor; if BricxCC is installed "
+                       "outside Program Files, click Choose... on the Bridge tab.")
+            self.setup_buttons["bricxcc"].state(["disabled"])
         else:
+            state = ta.bricxcc_state(exe)
             self.bricx_btn.state(["!disabled"])
             self.bricx_var.set({
                 "ready": "Ready. Starts BricxCC and the USB bridge; choose port 'usb' in BricxCC.",
-                "portable": "Starts BricxCC and the USB bridge; choose port 'usb' in BricxCC.",
-                "blocked": "First use needs one admin prompt: LEGO's own TOWERAPI.DLL is on this PC and must be "
-                           "overridden inside the BricxCC folder.",
-            }[ta.bricxcc_state(exe)])
+                "outdated": "Starts BricxCC and the USB bridge. First updates RCX Tower's TOWERAPI.DLL in the "
+                            "BricxCC folder (Windows asks for permission).",
+                "missing": "Starts BricxCC and the USB bridge. The first time it puts RCX Tower's TOWERAPI.DLL "
+                           "into the BricxCC folder (Windows asks for permission).",
+                "lego": "Starts BricxCC and the USB bridge. The first time it replaces LEGO's TOWERAPI.DLL in "
+                        "the BricxCC folder (kept as a backup; Windows asks for permission).",
+            }[state])
+            mark.set("OK" if state == "ready" else "to do")
+            detail.set({
+                "ready": "RCX Tower's TOWERAPI.DLL is in the BricxCC folder. Start the bridge, then BricxCC in "
+                         "any way, and choose port 'usb'.",
+                "outdated": "An older version of RCX Tower's TOWERAPI.DLL is in the BricxCC folder.",
+                "missing": "BricxCC needs a TOWERAPI.DLL for USB towers. Until it is in BricxCC's folder, "
+                           "BricxCC only connects when started with the Start BricxCC button.",
+                "lego": "LEGO's TOWERAPI.DLL is in the BricxCC folder; it needs LEGO's 32-bit driver, which "
+                        "64-bit Windows does not have.",
+            }[state])
+            self.setup_buttons["bricxcc"].state(["disabled"] if state == "ready" else ["!disabled"])
         if self.tray:
             if self.bridge:
                 self.tray.set_tooltip("RCX Tower - bridge on %s" % self._app_port())
