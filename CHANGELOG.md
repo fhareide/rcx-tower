@@ -4,6 +4,14 @@ Each release's note is its section here. To release: bump `__version__` in
 `rcxtower/__init__.py`, add a `## <version>` section below, commit, then push a `v<version>`
 tag (see "Releases" in the README).
 
+## 0.2.0
+
+- Linux: a download for x86-64 Linux (glibc 2.35 or newer, e.g. Ubuntu 22.04, Debian 12,
+  Fedora 36), with NQC and the firmware included. Unpack it and run `./rcx-tower`.
+- Linux: the Setup tab's Allow USB access installs a udev rule so the tower can be used
+  without root (one password prompt); `sudo rcx-tower install-driver` does the same. The
+  window says when the tower is plugged in but not yet allowed.
+
 ## 0.1.1
 
 - BricxCC: RCX Tower's TOWERAPI.DLL is now copied into the BricxCC folder once (one Windows

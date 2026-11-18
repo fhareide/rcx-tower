@@ -106,50 +106,50 @@ still works then. **Open log folder** shows where it is: `%APPDATA%\rcxtower` on
 Windows, `~/Library/Application Support/rcxtower` on macOS, `~/.config/rcxtower` on Linux. The
 file is kept under about two megabytes; the previous one is kept as `rcxtower.log.1`.
 
-## macOS and Linux (experimental)
+## macOS and Linux
 
-**Status: written but never run on a Mac or on Linux.** The RCX protocol code is the same as on
-Windows, where it is tested; the USB layer for these systems (`rcxtower/tower_libusb.py`) is new
-and unverified. Reports are welcome.
+Less tested than Windows: the RCX protocol code is the same, but the USB layer for these systems
+(`rcxtower/tower_libusb.py`) has had far less use. Reports are welcome.
 
 What is different from Windows:
 
-- **No driver step.** macOS lets a program open the tower directly through libusb. Linux has its
-  own tower driver (`legousbtower`), which RCX Tower detaches while it runs; you also need
-  permission on the device (a udev rule for USB ID `0694:0001`, or run as root).
+- **No driver.** macOS lets a program open the tower directly through libusb. Linux has its own
+  tower driver (`legousbtower`), which RCX Tower detaches while it runs. Linux lets only root
+  use a new USB device, so it needs a udev rule once: **Allow USB access** on the Setup tab
+  (asks for your password through pkexec) or `sudo rcx-tower install-driver` writes
+  `/etc/udev/rules.d/60-lego-usb-tower.rules` for USB ID `0694:0001`.
 - **No bridge, no BricxCC, no tray icon.** Those exist for Windows software. The window has the
   Editor, Brick, Remote and Setup tabs.
-- **NQC has to be built from source** and the `nqc` program put on your `PATH` (or in
-  `/opt/homebrew/bin`, `/usr/local/bin` or `~/bin`). Without it you can still download firmware
-  and ready-made `.rcx` files, and use the Remote tab.
+- **NQC is included in the packaged apps.** Running from source, build NQC and put `nqc` on
+  your `PATH` (or in `/opt/homebrew/bin`, `/usr/local/bin` or `~/bin`). Without it you can still
+  download firmware and ready-made `.rcx` files, and use the Remote tab.
 
-Setup:
+From source:
 
     pip3 install pyusb libusb-package     (libusb-package brings the libusb library itself)
     python3 -m rcxtower status
     python3 -m rcxtower gui
 
 On macOS, `brew install libusb` works in place of `libusb-package`. The Python from python.org
-includes tkinter; Homebrew's needs `brew install python-tk`.
+includes tkinter; Homebrew's needs `brew install python-tk`. On Debian/Ubuntu install
+`python3-tk`.
 
-### A Mac app and .dmg
+### Building the Mac and Linux apps
 
-**Status: the build script and workflow are written but have never been run.**
+The release workflow (see Releases below) builds both on GitHub. To build one yourself:
 
-A Mac app cannot be built on Windows, so there are two ways to get the `.dmg`:
+- **Mac:** `./build_mac.sh` makes `dist/RCX-Tower-<version>-mac-<processor>.dmg`. It needs
+  Python 3.9+ with tkinter and the Xcode command line tools.
+- **Linux:** `./build_linux.sh` makes `dist/RCX-Tower-<version>-linux-<processor>.tar.gz`: one
+  `rcx-tower` program, the udev rule and a short README. It needs Python 3.9+ with tkinter, and
+  make, g++, flex and bison for NQC. The program runs on the glibc it was built with or newer,
+  so build on the oldest distribution you want to support (the releases use Ubuntu 22.04).
 
-- **On GitHub:** open the repository's *Actions* tab, choose **Mac dmg** and click *Run workflow*
-  (pushing a tag such as `v0.1.0` starts it too). When it finishes, the run's page has two
-  downloads under *Artifacts*: one for Apple silicon Macs and one for Intel Macs. On a private
-  repository this uses the account's Actions minutes, and Mac minutes count ten times.
-- **On a Mac:** run `./build_mac.sh`. It needs Python 3.9+ with tkinter and the Xcode command
-  line tools, and leaves `dist/RCX-Tower-<version>-mac-<processor>.dmg`.
-
-The script also builds the NQC compiler from https://github.com/BrickBot/nqc and puts it inside
-the app. If that build fails the app is still made, without the ability to compile programs
+Both scripts build the NQC compiler from https://github.com/BrickBot/nqc and put it inside the
+app. If that build fails the app is still made, without the ability to compile programs
 (`build/nqc-build.log` says why).
 
-The app is not signed with an Apple developer certificate. The first time, macOS refuses to
+The Mac app is not signed with an Apple developer certificate. The first time, macOS refuses to
 open it: right-click the app, choose *Open*, then *Open* again (on recent macOS versions:
 *System Settings > Privacy & Security > Open Anyway*).
 
@@ -215,7 +215,7 @@ Two things in this project are not covered by it:
 ## Releases
 
 Downloads are published at <https://github.com/fhareide/rcx-tower-releases>, whose workflow
-builds the Windows exe and both Mac dmgs from this repo. To make a release:
+builds the Windows exe, both Mac dmgs and the Linux tar.gz from this repo. To make a release:
 
 1. Once per clone, install the hook: `cp tools/hooks/pre-push .git/hooks/pre-push` (needs `gh`
    logged in).
