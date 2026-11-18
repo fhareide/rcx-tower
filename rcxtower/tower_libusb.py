@@ -7,7 +7,18 @@ macOS needs no driver: no system driver claims the tower, so libusb can open it.
 Linux has a kernel driver (legousbtower) that this code detaches while it runs,
 and the user needs permission on the device (a udev rule, or root).
 """
+import os
+import subprocess
+import sys
+
 from .towerbase import EP_IN, EP_OUT, PRODUCT_ID, VENDOR_ID, TowerBase, TowerError
+
+LINUX = sys.platform.startswith("linux")
+# Lets every user open the tower (by default only root may). One file, read by udev.
+UDEV_PATH = "/etc/udev/rules.d/60-lego-usb-tower.rules"
+UDEV_RULE = ('# LEGO Mindstorms USB IR tower: usable without root (written by RCX Tower)\n'
+             'SUBSYSTEM=="usb", ATTRS{idVendor}=="%04x", ATTRS{idProduct}=="%04x", MODE="0666", TAG+="uaccess"\n'
+             % (VENDOR_ID, PRODUCT_ID))
 
 try:
     import usb.core
@@ -59,11 +70,59 @@ def find_tower_paths():
     return [_name(d) for d in _devices()]
 
 
+def _node(dev):
+    return "/dev/bus/usb/%03d/%03d" % (dev.bus, dev.address)
+
+
+def _allowed(dev):
+    """Linux: may this user open the tower? (Checked on the device file, without opening it.)"""
+    if not LINUX:
+        return True
+    node = _node(dev)
+    return not os.path.exists(node) or os.access(node, os.R_OK | os.W_OK)
+
+
 def tower_state():
-    """'ready' (plugged in and reachable), 'nolib' (pyusb/libusb missing) or 'absent'."""
+    """'ready' (plugged in and reachable), 'nolib' (pyusb/libusb missing), 'noperm' (Linux:
+    plugged in, but this user may not open it; see install_udev_rule) or 'absent'."""
     if library_problem():
         return "nolib"
-    return "ready" if _devices() else "absent"
+    devices = _devices()
+    if not devices:
+        return "absent"
+    return "ready" if any(_allowed(d) for d in devices) else "noperm"
+
+
+def udev_rule_installed():
+    try:
+        with open(UDEV_PATH) as f:
+            return f.read() == UDEV_RULE
+    except OSError:
+        return False
+
+
+def udev_commands():
+    """Shell commands (run as root) that install the rule and apply it to a tower plugged in now."""
+    return ["printf '%%s' '%s' > %s" % (UDEV_RULE.replace("'", "'\\''"), UDEV_PATH),
+            "udevadm control --reload-rules",
+            "udevadm trigger --subsystem-match=usb --attr-match=idVendor=%04x" % VENDOR_ID]
+
+
+def install_udev_rule():
+    """Install the udev rule: directly as root, else through pkexec (the desktop's password
+    prompt). Returns None when done, else a sentence saying what went wrong."""
+    script = " && ".join(udev_commands())
+    cmd = ["sh", "-c", script] if os.geteuid() == 0 else ["pkexec", "sh", "-c", script]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    except FileNotFoundError:
+        return "pkexec is not available. In a terminal run:  sudo %s install-driver" % (
+            sys.argv[0] if getattr(sys, "frozen", False) else "python3 -m rcxtower")
+    except subprocess.TimeoutExpired:
+        return "no answer from the password prompt"
+    if r.returncode != 0:
+        return "the password prompt was cancelled or failed (%s)" % ((r.stderr or "").strip() or r.returncode)
+    return None
 
 
 def _is_timeout(err):
@@ -100,6 +159,9 @@ class Tower(TowerBase):
             self._claimed = True
         except usb.core.USBError as e:
             self.close()
+            if LINUX and getattr(e, "errno", None) == 13:
+                raise TowerError("No permission to use the tower. Click Allow USB access on the Setup tab, "
+                                 "or run: sudo rcx-tower install-driver")
             raise TowerError("Cannot open tower (in use by another program, or no permission?): %s" % e)
 
     def close(self):

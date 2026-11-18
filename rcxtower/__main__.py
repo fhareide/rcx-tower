@@ -6,6 +6,7 @@
     python -m rcxtower bridge            (serial-tower emulation for BricxCC / NQC)
 """
 import argparse
+import os
 import sys
 import time
 
@@ -54,6 +55,13 @@ def cmd_status(a):
 
 
 def cmd_driver_check(a):
+    if sys.platform.startswith("linux"):
+        from . import tower_libusb as tl
+        print("No driver is needed. USB permission (udev rule %s): %s" % (
+            tl.UDEV_PATH, "installed" if tl.udev_rule_installed() else "not installed"))
+        print("Tower: %s" % {"ready": "usable", "noperm": "plugged in, but this user may not open it",
+                             "nolib": "cannot look (libusb missing)"}.get(tw.tower_state(), "not plugged in"))
+        return 0
     if sys.platform != "win32":
         print("No driver is needed on this system.")
         return 0
@@ -73,6 +81,19 @@ def cmd_driver_check(a):
 
 
 def cmd_install_driver(a):
+    if sys.platform.startswith("linux"):
+        from . import tower_libusb as tl
+        if os.geteuid() != 0:
+            print("This installs a udev rule and needs root:  sudo %s install-driver" % (
+                sys.argv[0] if getattr(sys, "frozen", False) else "python3 -m rcxtower"))
+            return 1
+        problem = tl.install_udev_rule()
+        if problem:
+            print("Failed: %s" % problem)
+            return 1
+        print("Installed %s. The tower can now be used without root (replug it if it is plugged in)."
+              % tl.UDEV_PATH)
+        return 0
     if sys.platform != "win32":
         print("No driver is needed on this system.")
         return 0
@@ -179,7 +200,7 @@ def main(argv=None):
     sub.add_parser("status", help="check tower, RCX and virtual ports").set_defaults(fn=cmd_status)
     sub.add_parser("driver-check", help="show what installing the tower driver would do (changes nothing)"
                    ).set_defaults(fn=cmd_driver_check)
-    sub.add_parser("install-driver", help="bind Windows' WinUSB driver to the tower (needs admin rights)"
+    sub.add_parser("install-driver", help="Windows: bind the WinUSB driver (admin); Linux: install the udev rule (root)"
                    ).set_defaults(fn=cmd_install_driver)
     p = sub.add_parser("firmware", help="download firmware (.lgo) to the RCX")
     p.add_argument("file", nargs="?", help="default: the bundled LEGO firmware 3.2.8")

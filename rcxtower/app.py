@@ -21,6 +21,7 @@ from .rcx import RCX
 # RCXTOWER_PORTABLE_UI=1 shows the window as it looks on macOS/Linux, for testing on Windows
 WINDOWS = sys.platform == "win32" and not os.environ.get("RCXTOWER_PORTABLE_UI")
 MAC = sys.platform == "darwin"
+LINUX = sys.platform.startswith("linux")
 if WINDOWS:
     # the bridge, the driver installer, the BricxCC helper and the tray icon are Windows-only
     import winreg
@@ -432,6 +433,11 @@ class App:
                 ("bricxcc", "Optional: BricxCC over USB (TOWERAPI.DLL)", "Set up BricxCC", self.setup_bricxcc),
                 ("com0com", "Optional: virtual COM port (only for COM port mode)", "Get com0com", COM0COM_URL),
             )
+        elif LINUX and FROZEN:
+            items = (
+                ("tower", "1. USB access (permission to use the tower)", "Allow USB access", self.allow_usb),
+                ("nqc", "2. NQC compiler (to download .nqc programs)", "Get NQC", NQC_URL),
+            )
         else:
             items = (
                 ("tower", "1. USB access" if FROZEN else "1. USB access (pyusb and libusb)",
@@ -452,7 +458,7 @@ class App:
             box.columnconfigure(1, weight=1)
             self.setup_rows[key] = (mark, detail)
             self.setup_buttons[key] = button
-            if not WINDOWS and FROZEN and key == "tower":
+            if MAC and FROZEN and key == "tower":
                 button.grid_remove()   # the packaged app has the USB library inside
         ttk.Separator(f).pack(fill="x", pady=(12, 8))
         box = ttk.Frame(f)
@@ -465,6 +471,27 @@ class App:
         ttk.Button(box, text="Open log folder", command=self.open_log_folder).grid(row=1, column=1, sticky="ne")
         box.columnconfigure(0, weight=1)
         return f
+
+    def allow_usb(self):
+        """Linux: install the udev rule that lets this user open the tower (one password prompt)."""
+        from . import tower_libusb as tl
+
+        def job():
+            self.log("Installing a udev rule so the tower can be used without root. The system asks for "
+                     "your password.")
+            problem = tl.install_udev_rule()
+            if problem:
+                self.log("Nothing was changed: %s." % problem)
+                return
+            for _ in range(10):  # udev applies the rule to the plugged-in tower a moment later
+                if tw.tower_state() != "noperm":
+                    break
+                time.sleep(0.5)
+            if tw.tower_state() == "noperm":
+                self.log("The rule is installed. Unplug the tower and plug it back in.")
+            else:
+                self.log("Done: the tower can be used without root.")
+        self.submit("Allowing USB access", job, raw=True)
 
     def install_driver(self):
         """Bind Windows' built-in WinUSB driver to the tower (one admin prompt)."""
@@ -825,9 +852,10 @@ class App:
             self._last_state = state
         self.tower_var.set({"ready": "Tower: connected", "nodriver": "Tower: plugged in, but the driver is missing for this USB port (see Setup)",
                             "nolib": "Tower: the USB library is missing (see Setup)",
+                            "noperm": "Tower: plugged in, but no permission to use it (see Setup)",
                             "absent": "Tower: not plugged in"}[state])
         mark, detail = self.setup_rows["tower"]
-        mark.set({"ready": "OK", "nodriver": "TO DO", "nolib": "TO DO", "absent": "?"}[state])
+        mark.set({"ready": "OK", "nodriver": "TO DO", "nolib": "TO DO", "noperm": "TO DO", "absent": "?"}[state])
         if WINDOWS:
             detail.set({
                 "ready": "WinUSB is bound to the tower.",
@@ -837,6 +865,15 @@ class App:
                 "nolib": "The libusb backend was chosen but pyusb or libusb is missing.",
                 "absent": "Plug the tower in to check its driver."}[state])
             self.setup_buttons["tower"].state(["!disabled"] if state == "nodriver" else ["disabled"])
+        elif LINUX:
+            detail.set({
+                "ready": "The tower is reachable. No driver is needed on this system.",
+                "noperm": "Linux lets only root use a new USB device. Click Allow USB access to install a udev "
+                          "rule for the tower (asks for your password once), or run:  sudo rcx-tower install-driver",
+                "nolib": "In a terminal run:  pip3 install pyusb libusb-package",
+                "absent": "Plug the tower in."}.get(state, ""))
+            if FROZEN:
+                self.setup_buttons["tower"].state(["!disabled"] if state == "noperm" else ["disabled"])
         else:
             detail.set({
                 "ready": "The tower is reachable. No driver is needed on this system.",
