@@ -4,6 +4,11 @@ Each release's note is its section here. To release: bump `__version__` in
 `rcxtower/__init__.py`, add a `## <version>` section below, commit, then push a `v<version>`
 tag (see "Releases" in the README).
 
+## Unreleased
+
+- Releases are now published on this repo (github.com/fhareide/rcx-tower), which is open
+  source. The old download page, rcx-tower-releases, is archived.
+
 ## 0.2.0
 
 - Linux: a download for x86-64 Linux (glibc 2.35 or newer, e.g. Ubuntu 22.04, Debian 12,

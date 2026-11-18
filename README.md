@@ -1,9 +1,30 @@
 # RCX Tower
 
-Use the LEGO Mindstorms **USB IR tower** (RCX 1.0 / 2.0, part 9713 tower) on 64-bit Windows 10 and 11.
+Use the LEGO Mindstorms **USB IR tower** (RCX 1.0 / 2.0, part 9713 tower) on 64-bit Windows 10
+and 11, macOS and Linux.
 
 LEGO's own tower driver is 32-bit only. RCX Tower replaces it with Microsoft's built-in WinUSB
 driver plus a small program that speaks the tower's protocol.
+
+## Download
+
+**[Get the latest version](https://github.com/fhareide/rcx-tower/releases/latest)** (all
+versions are on the [Releases](https://github.com/fhareide/rcx-tower/releases) page).
+
+- **Windows**: `RCX-Tower-<version>-windows.exe`. Double-click it; nothing is installed.
+  SmartScreen may warn about an unknown publisher: More info → Run anyway.
+- **macOS, Apple silicon** (M1 and later): `RCX-Tower-<version>-mac-arm64.dmg`.
+- **macOS, Intel**: `RCX-Tower-<version>-mac-x86_64.dmg`.
+
+  Open the .dmg and drag RCX Tower to Applications. The app is not signed by Apple, so the
+  first start is blocked: right-click the app, choose Open, then Open again (or System
+  Settings → Privacy & Security → "Open Anyway").
+- **Linux** (x86-64): `RCX-Tower-<version>-linux-x86_64.tar.gz`. Unpack it and run
+  `./rcx-tower`. It needs glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36 and later).
+
+First start: on Windows, plug the tower in, open the **Setup** tab and click **Install tower
+driver** (see [One-time setup](#one-time-setup)). macOS needs no driver. On Linux, click
+**Allow USB access** on the Setup tab, or run `sudo ./rcx-tower install-driver`.
 
 ## What it does
 
@@ -214,15 +235,17 @@ Two things in this project are not covered by it:
 
 ## Releases
 
-Downloads are published at <https://github.com/fhareide/rcx-tower-releases>, whose workflow
-builds the Windows exe, both Mac dmgs and the Linux tar.gz from this repo. To make a release:
+The [release workflow](.github/workflows/release.yml) builds the Windows exe, both Mac dmgs
+and the Linux tar.gz on GitHub Actions and publishes them on this repo's Releases page. To make
+a release:
 
-1. Once per clone, install the hook: `cp tools/hooks/pre-push .git/hooks/pre-push` (needs `gh`
-   logged in).
-2. Bump `__version__` in `rcxtower/__init__.py` and add its section to [CHANGELOG.md](CHANGELOG.md)
+1. Bump `__version__` in `rcxtower/__init__.py` and add its section to [CHANGELOG.md](CHANGELOG.md)
    (the section becomes the release note). Commit and push.
-3. Tag and push the tag: `git tag v0.1.1 && git push origin v0.1.1`. The hook tags the releases
-   repo too, which starts the build there.
+2. Tag and push the tag: `git tag v0.3.0 && git push origin v0.3.0`.
+
+Running the workflow by hand (Actions tab, Run workflow) builds the apps without releasing
+them; they are kept as the run's artifacts. Releases up to 0.2.0 were first published at
+<https://github.com/fhareide/rcx-tower-releases>, which is now archived.
 
 LEGO and Mindstorms are trademarks of the LEGO Group, which does not sponsor or endorse this
 project.
